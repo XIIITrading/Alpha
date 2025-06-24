@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Module Loading Test</title>
+    <meta charset="UTF-8">
+</head>
+<body>
+    <h1>Module Loading Diagnostic</h1>
+    <pre id="results"></pre>
+    
+    <script type="module">
+        const results = [];
+        
+        async function testImport(path, description) {
+            try {
+                const start = performance.now();
+                const module = await import(path);
+                const time = performance.now() - start;
+                results.push(`✅ ${description}: SUCCESS (${time.toFixed(2)}ms)`);
+                return module;
+            } catch (error) {
+                results.push(`❌ ${description}: FAILED`);
+                results.push(`   Error: ${error.message}`);
+                results.push(`   Stack: ${error.stack}`);
+                return null;
+            }
+        }
+        
+        async function runTests() {
+            results.push('=== MODULE LOADING DIAGNOSTIC ===\n');
+            
+            // Test 1: Can we load the GridManager shim?
+            results.push('1. Testing GridManager shim:');
+            const shimModule = await testImport('./GridManager.js', 'GridManager.js shim');
+            
+            // Test 2: Can we load the modular GridManager directly?
+            results.push('\n2. Testing modular GridManager:');
+            const modularModule = await testImport('./grid-manager/index.js', 'grid-manager/index.js');
+            
+            // Test 3: Test individual grid-manager submodules
+            results.push('\n3. Testing grid-manager submodules:');
+            await testImport('./grid-manager/config/index.js', 'config/index.js');
+            await testImport('./grid-manager/state/index.js', 'state/index.js');
+            await testImport('./grid-manager/renderers/index.js', 'renderers/index.js');
+            await testImport('./grid-manager/formatters/index.js', 'formatters/index.js');
+            await testImport('./grid-manager/comparators/index.js', 'comparators/index.js');
+            await testImport('./grid-manager/core/index.js', 'core/index.js');
+            await testImport('./grid-manager/updates/index.js', 'updates/index.js');
+            await testImport('./grid-manager/styles/index.js', 'styles/index.js');
+            await testImport('./grid-manager/utils/index.js', 'utils/index.js');
+            
+            // Test 4: Can we instantiate GridManager?
+            results.push('\n4. Testing GridManager instantiation:');
+            if (shimModule) {
+                try {
+                    const GridManager = shimModule.default;
+                    const instance = new GridManager({ test: true });
+                    results.push('✅ GridManager instantiation: SUCCESS');
+                } catch (error) {
+                    results.push('❌ GridManager instantiation: FAILED');
+                    results.push(`   Error: ${error.message}`);
+                }
+            }
+            
+            // Test 5: Test the bridge modules
+            results.push('\n5. Testing bridge modules:');
+            await testImport('./bridge/index.js', 'bridge/index.js');
+            await testImport('./bridge/core/initialization.js', 'bridge/core/initialization.js');
+            
+            // Display results
+            document.getElementById('results').textContent = results.join('\n');
+        }
+        
+        runTests();
+    </script>
+</body>
+</html>

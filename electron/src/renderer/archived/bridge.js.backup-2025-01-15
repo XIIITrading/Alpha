@@ -1,0 +1,1245 @@
+/**
+ * Perspective Integration Bridge - FIXED VERSION
+ * 
+ * This module handles all communication between Electron and AG-Grid.
+ * It manages table creation, data updates, and view configuration.
+ * 
+ * Architecture:
+ * - Uses AG-Grid Community for high-performance data grids
+ * - Implements batching for high-frequency updates
+ * - Manages multiple tables with different schemas
+ * - Handles view persistence and restoration
+ * - Supports multi-grid dashboard layouts
+ */
+
+import GridManager from './GridManager.js';
+
+// Configuration for standard tables
+const TABLE_CONFIGS = {
+    scanner: {
+        name: 'Scanner Results',
+        schema: {
+            symbol: 'string',           // Stock symbol
+            price: 'float',            // Current price
+            change: 'float',           // Price change
+            changePercent: 'float',    // Percentage change
+            volume: 'integer',         // Volume
+            relativeVolume: 'float',   // Volume vs average
+            marketCap: 'float',        // Market capitalization
+            float: 'float',            // Float shares
+            shortFloat: 'float',       // Short float percentage
+            atr: 'float',              // Average True Range
+            beta: 'float',             // Beta coefficient
+            rsi: 'float',              // RSI indicator
+            alerts: 'integer',         // Number of alerts
+            timestamp: 'datetime'      // Last update time
+        },
+        defaultView: {
+            columns: ['symbol', 'price', 'changePercent', 'volume', 'relativeVolume'],
+            sort: [['relativeVolume', 'desc']],
+            filter: []
+        },
+        // Add grid options here to avoid colDef warnings
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    positions: {
+        name: 'Open Positions',
+        schema: {
+            symbol: 'string',          // Stock symbol
+            side: 'string',            // LONG or SHORT
+            quantity: 'integer',       // Share quantity
+            entryPrice: 'float',       // Entry price
+            currentPrice: 'float',     // Current price
+            marketValue: 'float',      // Current market value
+            unrealizedPL: 'float',     // Unrealized P&L
+            unrealizedPLPercent: 'float', // Unrealized P&L %
+            realizedPL: 'float',       // Realized P&L (partial fills)
+            stopLoss: 'float',         // Stop loss price
+            takeProfit: 'float',       // Take profit price
+            duration: 'integer',       // Position duration (seconds)
+            timestamp: 'datetime'      // Last update
+        },
+        defaultView: {
+            columns: ['symbol', 'side', 'quantity', 'entryPrice', 'currentPrice', 'unrealizedPL', 'unrealizedPLPercent'],
+            sort: [['unrealizedPLPercent', 'desc']],
+            filter: []
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    signals: {
+        name: 'Trading Signals',
+        schema: {
+            id: 'string',              // Unique signal ID
+            timestamp: 'datetime',     // Signal generation time
+            symbol: 'string',          // Stock symbol
+            type: 'string',            // Signal type (ENTRY, EXIT, etc.)
+            direction: 'string',       // BUY or SELL
+            strength: 'float',         // Signal strength (0-100)
+            price: 'float',            // Trigger price
+            stopLoss: 'float',         // Suggested stop loss
+            takeProfit: 'float',       // Suggested take profit
+            confidence: 'float',       // Confidence score
+            source: 'string',          // Signal source/strategy
+            status: 'string',          // ACTIVE, TRIGGERED, EXPIRED
+            notes: 'string'            // Additional notes
+        },
+        defaultView: {
+            columns: ['timestamp', 'symbol', 'type', 'direction', 'price', 'strength', 'status'],
+            sort: [['timestamp', 'desc']],
+            filter: [['status', '==', 'ACTIVE']]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    levels: {
+        name: 'Price Levels',
+        schema: {
+            symbol: 'string',          // Stock symbol
+            type: 'string',            // SUPPORT, RESISTANCE, PIVOT
+            level: 'float',            // Price level
+            strength: 'integer',       // Level strength (1-5)
+            touches: 'integer',        // Number of touches
+            lastTouch: 'datetime',     // Last touch time
+            created: 'datetime',       // When level was identified
+            timeframe: 'string',       // Timeframe (5m, 1h, 1d, etc.)
+            active: 'boolean'          // Is level still active
+        },
+        defaultView: {
+            columns: ['symbol', 'type', 'level', 'strength', 'touches', 'timeframe'],
+            sort: [['symbol', 'asc'], ['level', 'desc']],
+            filter: [['active', '==', true]]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    }
+};
+
+// Configuration for Pre-Market dashboard grids
+const PREMARKET_GRID_CONFIGS = {
+    gappers: {
+        name: 'Gap Scanner',
+        schema: {
+            symbol: 'string',
+            price: 'float',
+            preMarketChange: 'float',
+            preMarketChangePercent: 'float',
+            gapPercent: 'float',
+            preMarketVolume: 'integer',
+            relativeVolume: 'float',
+            gapType: 'string',
+            float: 'float',
+            atr: 'float'
+        },
+        defaultView: {
+            columns: ['symbol', 'price', 'gapPercent', 'preMarketVolume', 'relativeVolume'],
+            sort: [['gapPercent', 'desc']],
+            filter: [['gapPercent', '>', 2]]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    structure: {
+        name: 'Market Structure',
+        schema: {
+            symbol: 'string',
+            trend: 'string',
+            keyLevel: 'float',
+            levelType: 'string',
+            distance: 'float',
+            strength: 'integer',
+            priceAction: 'string',
+            volumeProfile: 'string'
+        },
+        defaultView: {
+            columns: ['symbol', 'trend', 'keyLevel', 'distance', 'priceAction'],
+            sort: [['distance', 'asc']]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    hvn: {
+        name: 'HVN Proximity',
+        schema: {
+            symbol: 'string',
+            price: 'float',
+            nearestHVN: 'float',
+            hvnStrength: 'integer',
+            distancePercent: 'float',
+            volumeAtHVN: 'integer',
+            pocLevel: 'float',
+            hvnCount: 'integer'
+        },
+        defaultView: {
+            columns: ['symbol', 'price', 'nearestHVN', 'distancePercent', 'hvnStrength'],
+            sort: [['distancePercent', 'asc']]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    },
+    
+    momentum: {
+        name: 'Momentum Leaders',
+        schema: {
+            symbol: 'string',
+            price: 'float',
+            momentum5m: 'float',
+            momentum15m: 'float',
+            volumeRate: 'float',
+            priceVelocity: 'float',
+            buyPressure: 'float',
+            newsCount: 'integer'
+        },
+        defaultView: {
+            columns: ['symbol', 'price', 'momentum5m', 'volumeRate', 'buyPressure'],
+            sort: [['momentum5m', 'desc']]
+        },
+        gridOptions: {
+            animateRows: true,
+            enableCellTextSelection: true,
+            ensureDomOrder: true
+        }
+    }
+};
+
+/**
+ * Bridge state management
+ */
+const BridgeState = {
+    // AG-Grid Manager Instance
+    gridManager: null,
+    
+    // Map of table name to table configuration
+    tables: new Map(),
+    
+    // Map of tab ID to grid configuration
+    viewers: new Map(),
+    
+    // Map of dashboard ID to dashboard configuration
+    dashboards: new Map(),
+    
+    // Update queue for batching high-frequency updates
+    updateQueue: new Map(),
+    
+    // Performance tracking
+    updateCount: 0,
+    lastUpdateTime: Date.now(),
+    
+    // Configuration passed from index.js
+    config: null,
+    
+    // Market data store for calculations
+    marketData: new Map(),
+    
+    // Volume profile engine (will be initialized later)
+    volumeProfileEngine: null,
+    
+    // Track grid ready states
+    gridReadyStates: new Map()
+};
+
+/**
+ * Load AG-Grid and create GridManager
+ */
+async function loadPerspective() {
+    console.log('Loading AG-Grid...');
+    
+    try {
+        // Wait for AG-Grid to be available
+        let attempts = 0;
+        while (typeof agGrid === 'undefined' && attempts < 50) {
+            console.log('Waiting for AG-Grid to load...');
+            await new Promise(resolve => setTimeout(resolve, 100));
+            attempts++;
+        }
+        
+        if (typeof agGrid === 'undefined') {
+            throw new Error('AG-Grid failed to load after 5 seconds');
+        }
+        
+        console.log('AG-Grid is available, creating GridManager...');
+        
+        // Create GridManager instance
+        BridgeState.gridManager = new GridManager({
+            AppState: BridgeState.config.AppState,
+            isDevelopment: BridgeState.config.electronAPI.isDevelopment
+        });
+        
+        // Inject dashboard styles
+        injectDashboardStyles();
+        
+        console.log('AG-Grid loaded successfully');
+        return true;
+        
+    } catch (error) {
+        console.error('Failed to load AG-Grid:', error);
+        throw error;
+    }
+}
+
+/**
+ * Inject CSS styles for dashboard layouts
+ */
+function injectDashboardStyles() {
+    if (document.getElementById('dashboard-styles')) return;
+    
+    const style = document.createElement('style');
+    style.id = 'dashboard-styles';
+    style.textContent = `
+        /* Pre-Market Dashboard Styles */
+        .premarket-dashboard {
+            width: 100%;
+            height: 100%;
+            background: #0d0d0d;
+        }
+
+        .dashboard-grid-2x2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 8px;
+            padding: 8px;
+            height: 100%;
+        }
+
+        .dashboard-panel {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 8px 12px;
+            background: #0d0d0d;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h3 {
+            margin: 0;
+            font-size: 14px;
+            color: #00aaff;
+            font-weight: 600;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .panel-status {
+            font-size: 11px;
+            color: #888;
+        }
+
+        .panel-grid {
+            flex: 1;
+            min-height: 0; /* Critical for AG-Grid */
+        }
+        
+        /* Fix for AG-Grid sizing issues */
+        .ag-root-wrapper {
+            height: 100%;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .dashboard-grid-2x2 {
+                gap: 4px;
+                padding: 4px;
+            }
+            
+            .panel-header {
+                padding: 6px 10px;
+            }
+            
+            .panel-header h3 {
+                font-size: 13px;
+            }
+        }
+    `;
+    
+    document.head.appendChild(style);
+}
+
+/**
+ * Create Pre-Market dashboard with 2x2 grid layout
+ */
+async function createPreMarketDashboard(tabId, container) {
+    console.log(`Creating Pre-Market Dashboard for tab: ${tabId}`);
+    
+    // Create dashboard layout
+    const dashboard = document.createElement('div');
+    dashboard.className = 'premarket-dashboard';
+    dashboard.innerHTML = `
+        <div class="dashboard-grid-2x2">
+            <div class="dashboard-panel" id="panel-gappers">
+                <div class="panel-header">
+                    <h3>ON Gap Scanner</h3>
+                    <span class="panel-status" id="status-gappers">Loading...</span>
+                </div>
+                <div class="panel-grid" id="grid-pm-gappers"></div>
+            </div>
+            <div class="dashboard-panel" id="panel-structure">
+                <div class="panel-header">
+                    <h3>Market Structure</h3>
+                    <span class="panel-status" id="status-structure">Loading...</span>
+                </div>
+                <div class="panel-grid" id="grid-pm-structure"></div>
+            </div>
+            <div class="dashboard-panel" id="panel-hvn">
+                <div class="panel-header">
+                    <h3>HVN Zone Proximity</h3>
+                    <span class="panel-status" id="status-hvn">Loading...</span>
+                </div>
+                <div class="panel-grid" id="grid-pm-hvn"></div>
+            </div>
+            <div class="dashboard-panel" id="panel-momentum">
+                <div class="panel-header">
+                    <h3>Momentum Leaders</h3>
+                    <span class="panel-status" id="status-momentum">Loading...</span>
+                </div>
+                <div class="panel-grid" id="grid-pm-momentum"></div>
+            </div>
+        </div>
+    `;
+    
+    container.appendChild(dashboard);
+    
+    // Wait a frame for DOM to update
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    
+    // Create grid instances
+    const grids = await createPreMarketGrids();
+    
+    // Initialize calculation modules
+    const modules = initializePreMarketModules(grids);
+    
+    // Store dashboard reference
+    BridgeState.dashboards.set(tabId, {
+        element: dashboard,
+        grids: grids,
+        modules: modules,
+        updateIntervals: []
+    });
+    
+    // Start update loops after grids are ready
+    setTimeout(() => {
+        startPreMarketUpdates(tabId);
+    }, 100);
+    
+    return dashboard;
+}
+
+/**
+ * Create all Pre-Market grid instances
+ */
+async function createPreMarketGrids() {
+    const grids = {};
+    
+    // Create grids with proper error handling and ready state tracking
+    try {
+        // Gap Scanner Grid
+        grids.gappers = await BridgeState.gridManager.createGrid(
+            'pm-gappers',
+            document.getElementById('grid-pm-gappers'),
+            PREMARKET_GRID_CONFIGS.gappers
+        );
+        
+        // Market Structure Grid
+        grids.structure = await BridgeState.gridManager.createGrid(
+            'pm-structure',
+            document.getElementById('grid-pm-structure'),
+            PREMARKET_GRID_CONFIGS.structure
+        );
+        
+        // HVN Proximity Grid
+        grids.hvn = await BridgeState.gridManager.createGrid(
+            'pm-hvn',
+            document.getElementById('grid-pm-hvn'),
+            PREMARKET_GRID_CONFIGS.hvn
+        );
+        
+        // Momentum Grid
+        grids.momentum = await BridgeState.gridManager.createGrid(
+            'pm-momentum',
+            document.getElementById('grid-pm-momentum'),
+            PREMARKET_GRID_CONFIGS.momentum
+        );
+        
+        // Wait for all grids to be ready
+        await waitForGridsReady(Object.keys(grids));
+        
+    } catch (error) {
+        console.error('Error creating pre-market grids:', error);
+    }
+    
+    return grids;
+}
+
+/**
+ * Wait for grids to be ready before sizing
+ */
+async function waitForGridsReady(gridIds) {
+    const maxWaitTime = 5000; // 5 seconds
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < maxWaitTime) {
+        const allReady = gridIds.every(id => {
+            const gridInfo = BridgeState.gridManager.getGrid(id);
+            return gridInfo && gridInfo.api && !gridInfo.api.isDestroyed();
+        });
+        
+        if (allReady) {
+            // Size columns after grids are ready
+            gridIds.forEach(id => {
+                const gridInfo = BridgeState.gridManager.getGrid(id);
+                if (gridInfo && gridInfo.api) {
+                    // Use setTimeout to ensure DOM is ready
+                    setTimeout(() => {
+                        try {
+                            gridInfo.api.sizeColumnsToFit();
+                        } catch (e) {
+                            console.log(`Grid ${id} not ready for sizing yet`);
+                        }
+                    }, 100);
+                }
+            });
+            return;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    console.warn('Some grids did not become ready in time');
+}
+
+/**
+ * Initialize Pre-Market calculation modules
+ */
+function initializePreMarketModules(grids) {
+    const modules = {};
+    
+    // Gap Scanner Module
+    modules.gapScanner = new GapScannerModule(BridgeState.gridManager);
+    
+    // Market Structure Module
+    modules.marketStructure = new MarketStructureModule(BridgeState.gridManager);
+    
+    // HVN Proximity Module
+    modules.hvnProximity = new HVNProximityModule(
+        BridgeState.gridManager, 
+        BridgeState.volumeProfileEngine
+    );
+    
+    // Momentum Module
+    modules.momentum = new MomentumModule(BridgeState.gridManager);
+    
+    return modules;
+}
+
+/**
+ * Start update loops for Pre-Market dashboard
+ */
+function startPreMarketUpdates(tabId) {
+    const dashboard = BridgeState.dashboards.get(tabId);
+    if (!dashboard) return;
+    
+    // Update intervals for each module
+    const intervals = [];
+    
+    // Initial updates with proper error handling
+    try {
+        dashboard.modules.gapScanner.update(BridgeState.marketData);
+        dashboard.modules.marketStructure.update(BridgeState.marketData);
+        dashboard.modules.hvnProximity.update(Array.from(BridgeState.marketData.keys()));
+        dashboard.modules.momentum.update(BridgeState.marketData);
+    } catch (error) {
+        console.error('Error in initial pre-market updates:', error);
+    }
+    
+    // Gap Scanner - Update every 5 seconds
+    intervals.push(setInterval(() => {
+        try {
+            dashboard.modules.gapScanner.update(BridgeState.marketData);
+            updatePanelStatus('gappers', `Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+            console.error('Gap scanner update error:', error);
+        }
+    }, 5000));
+    
+    // Market Structure - Update every 10 seconds
+    intervals.push(setInterval(() => {
+        try {
+            dashboard.modules.marketStructure.update(BridgeState.marketData);
+            updatePanelStatus('structure', `Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+            console.error('Market structure update error:', error);
+        }
+    }, 10000));
+    
+    // HVN Proximity - Update every 15 seconds
+    intervals.push(setInterval(() => {
+        try {
+            dashboard.modules.hvnProximity.update(Array.from(BridgeState.marketData.keys()));
+            updatePanelStatus('hvn', `Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+            console.error('HVN proximity update error:', error);
+        }
+    }, 15000));
+    
+    // Momentum - Update every 3 seconds
+    intervals.push(setInterval(() => {
+        try {
+            dashboard.modules.momentum.update(BridgeState.marketData);
+            updatePanelStatus('momentum', `Updated ${new Date().toLocaleTimeString()}`);
+        } catch (error) {
+            console.error('Momentum update error:', error);
+        }
+    }, 3000));
+    
+    // Store intervals for cleanup
+    dashboard.updateIntervals = intervals;
+}
+
+/**
+ * Update panel status text
+ */
+function updatePanelStatus(panelId, status) {
+    const statusElement = document.getElementById(`status-${panelId}`);
+    if (statusElement) {
+        statusElement.textContent = status;
+    }
+}
+
+/**
+ * Gap Scanner Module
+ */
+class GapScannerModule {
+    constructor(gridManager) {
+        this.gridManager = gridManager;
+        this.updateInterval = 5000; // 5 seconds
+    }
+    
+    async calculate(marketData) {
+        const results = [];
+        
+        for (const [symbol, data] of marketData) {
+            const prevClose = data.previousClose;
+            const preMarketPrice = data.preMarketPrice || data.price;
+            
+            if (prevClose && preMarketPrice) {
+                const gapPercent = ((preMarketPrice - prevClose) / prevClose) * 100;
+                
+                // Only include significant gaps
+                if (Math.abs(gapPercent) >= 1) {
+                    results.push({
+                        symbol: symbol,
+                        price: preMarketPrice,
+                        preMarketChange: preMarketPrice - prevClose,
+                        preMarketChangePercent: gapPercent,
+                        gapPercent: gapPercent,
+                        preMarketVolume: data.preMarketVolume || 0,
+                        relativeVolume: data.relativeVolume || 0,
+                        gapType: this.classifyGap(gapPercent, data),
+                        float: data.float || 0,
+                        atr: data.atr || 0
+                    });
+                }
+            }
+        }
+        
+        return results;
+    }
+    
+    classifyGap(gapPercent, data) {
+        const absGap = Math.abs(gapPercent);
+        if (absGap < 2) return 'Small';
+        if (absGap < 5) return 'Medium';
+        if (absGap < 10) return 'Large';
+        return 'Extreme';
+    }
+    
+    async update(data) {
+        const calculated = await this.calculate(data);
+        if (this.gridManager) {
+            this.gridManager.updateGrid('pm-gappers', calculated, true);
+        }
+    }
+}
+
+/**
+ * Market Structure Module
+ */
+class MarketStructureModule {
+    constructor(gridManager) {
+        this.gridManager = gridManager;
+    }
+    
+    async calculate(marketData) {
+        const results = [];
+        
+        for (const [symbol, data] of marketData) {
+            if (data.levels && data.levels.length > 0) {
+                const currentPrice = data.price;
+                const nearestLevel = this.findNearestLevel(currentPrice, data.levels);
+                
+                results.push({
+                    symbol: symbol,
+                    trend: data.trend || 'Neutral',
+                    keyLevel: nearestLevel.level,
+                    levelType: nearestLevel.type,
+                    distance: Math.abs(currentPrice - nearestLevel.level),
+                    strength: nearestLevel.strength,
+                    priceAction: this.analyzePriceAction(data),
+                    volumeProfile: data.volumeProfile || 'Normal'
+                });
+            }
+        }
+        
+        return results;
+    }
+    
+    findNearestLevel(price, levels) {
+        let nearest = levels[0];
+        let minDistance = Math.abs(price - levels[0].level);
+        
+        for (const level of levels) {
+            const distance = Math.abs(price - level.level);
+            if (distance < minDistance) {
+                minDistance = distance;
+                nearest = level;
+            }
+        }
+        
+        return nearest;
+    }
+    
+    analyzePriceAction(data) {
+        // Simple price action analysis
+        if (data.change > 0) {
+            return data.volume > data.avgVolume ? 'Bullish Strong' : 'Bullish';
+        } else {
+            return data.volume > data.avgVolume ? 'Bearish Strong' : 'Bearish';
+        }
+    }
+    
+    async update(data) {
+        const calculated = await this.calculate(data);
+        if (this.gridManager) {
+            this.gridManager.updateGrid('pm-structure', calculated, true);
+        }
+    }
+}
+
+/**
+ * HVN Proximity Module
+ */
+class HVNProximityModule {
+    constructor(gridManager, volumeProfileEngine) {
+        this.gridManager = gridManager;
+        this.volumeProfileEngine = volumeProfileEngine;
+    }
+    
+    async calculate(symbols) {
+        const results = [];
+        
+        // For now, generate mock HVN data
+        // This will be replaced with actual volume profile calculations
+        for (const symbol of symbols) {
+            const marketData = BridgeState.marketData.get(symbol);
+            if (!marketData) continue;
+            
+            const currentPrice = marketData.price;
+            const mockHVN = currentPrice * (0.98 + Math.random() * 0.04); // ±2% from current price
+            
+            results.push({
+                symbol: symbol,
+                price: currentPrice,
+                nearestHVN: mockHVN,
+                hvnStrength: Math.floor(Math.random() * 5) + 1,
+                distancePercent: Math.abs((currentPrice - mockHVN) / currentPrice * 100),
+                volumeAtHVN: Math.floor(marketData.volume * (0.8 + Math.random() * 0.4)),
+                pocLevel: mockHVN * (0.99 + Math.random() * 0.02),
+                hvnCount: Math.floor(Math.random() * 5) + 3
+            });
+        }
+        
+        return results;
+    }
+    
+    async update(symbols) {
+        const calculated = await this.calculate(symbols);
+        if (this.gridManager) {
+            this.gridManager.updateGrid('pm-hvn', calculated, true);
+        }
+    }
+}
+
+/**
+ * Momentum Module
+ */
+class MomentumModule {
+    constructor(gridManager) {
+        this.gridManager = gridManager;
+    }
+    
+    async calculate(marketData) {
+        const results = [];
+        
+        for (const [symbol, data] of marketData) {
+            const momentum5m = data.momentum5m || (Math.random() * 10 - 5);
+            const momentum15m = data.momentum15m || (Math.random() * 8 - 4);
+            
+            results.push({
+                symbol: symbol,
+                price: data.price,
+                momentum5m: momentum5m,
+                momentum15m: momentum15m,
+                volumeRate: data.volumeRate || (data.volume / 1000000),
+                priceVelocity: Math.abs(momentum5m) * (data.relativeVolume || 1),
+                buyPressure: 50 + (momentum5m * 10),
+                newsCount: data.newsCount || 0
+            });
+        }
+        
+        // Sort by momentum and return top 20
+        return results
+            .sort((a, b) => Math.abs(b.momentum5m) - Math.abs(a.momentum5m))
+            .slice(0, 20);
+    }
+    
+    async update(data) {
+        const calculated = await this.calculate(data);
+        if (this.gridManager) {
+            this.gridManager.updateGrid('pm-momentum', calculated, true);
+        }
+    }
+}
+
+/**
+ * Create a table configuration
+ * @param {string} tableId - Unique table identifier
+ * @param {object} config - Table configuration
+ */
+async function createTable(tableId, config) {
+    console.log(`Creating table configuration: ${tableId}`);
+    
+    try {
+        // Store table configuration
+        BridgeState.tables.set(tableId, {
+            config: config,
+            rowCount: 0
+        });
+        
+        console.log(`Table configuration stored: ${tableId}`);
+        return true;
+        
+    } catch (error) {
+        console.error(`Failed to create table ${tableId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Create an AG-Grid viewer for a table
+ * @param {string} tabId - Tab identifier
+ * @param {string} tableId - Table to display
+ * @param {object} container - DOM container for viewer
+ */
+async function createViewer(tabId, tableId, container) {
+    console.log(`Creating viewer for tab: ${tabId}, table: ${tableId}`);
+    
+    try {
+        // Check if this is the pre-market tab
+        if (tableId === 'premarket') {
+            const dashboard = await createPreMarketDashboard(tabId, container);
+            
+            // Store viewer reference with consistent structure
+            const viewer = {
+                element: dashboard,
+                container: container,
+                isDashboard: true,
+                instance: {
+                    // Add notifyResize method for dashboards
+                    notifyResize: () => {
+                        const dashboardState = BridgeState.dashboards.get(tabId);
+                        if (dashboardState && dashboardState.grids) {
+                            // Resize all grids in the dashboard
+                            Object.entries(dashboardState.grids).forEach(([gridId, gridApi]) => {
+                                // Get grid info through GridManager
+                                const gridInfo = BridgeState.gridManager.getGrid(`pm-${gridId}`);
+                                if (gridInfo && gridInfo.api && !gridInfo.api.isDestroyed()) {
+                                    try {
+                                        gridInfo.api.sizeColumnsToFit();
+                                    } catch (e) {
+                                        console.log(`Grid ${gridId} resize error:`, e);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            };
+            
+            // Store in viewers map
+            BridgeState.viewers.set(tabId, viewer);
+            
+            return viewer;
+        }
+        
+        // Get table configuration for standard tables
+        const tableConfig = TABLE_CONFIGS[tableId];
+        if (!tableConfig) {
+            throw new Error(`Unknown table configuration: ${tableId}`);
+        }
+        
+        // Create container div for the grid
+        const gridContainer = document.createElement('div');
+        gridContainer.id = `grid-container-${tabId}`;
+        gridContainer.style.width = '100%';
+        gridContainer.style.height = '100%';
+        container.appendChild(gridContainer);
+        
+        // Create AG-Grid instance
+        const gridApi = await BridgeState.gridManager.createGrid(
+            tableId,
+            gridContainer,
+            tableConfig
+        );
+        
+        // Create viewer object with consistent structure
+        const viewer = {
+            element: gridContainer,
+            grid: gridApi,
+            tableId: tableId,
+            container: container,
+            instance: {
+                // Add notifyResize method that calls AG-Grid's sizeColumnsToFit
+                notifyResize: () => {
+                    const gridInfo = BridgeState.gridManager.getGrid(tableId);
+                    if (gridInfo && gridInfo.api && !gridInfo.api.isDestroyed()) {
+                        try {
+                            gridInfo.api.sizeColumnsToFit();
+                        } catch (e) {
+                            console.log(`Grid ${tableId} resize error:`, e);
+                        }
+                    }
+                }
+            }
+        };
+        
+        // Store viewer reference
+        BridgeState.viewers.set(tabId, viewer);
+        
+        // Set up event handlers
+        setupViewerEvents(tabId, gridContainer);
+        
+        // Load saved view configuration if exists
+        await loadViewerState(tabId, gridContainer);
+        
+        console.log(`AG-Grid created for ${tabId}`);
+        
+        return viewer;
+        
+    } catch (error) {
+        console.error(`Failed to create AG-Grid for ${tabId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Set up event handlers for a viewer
+ * @param {string} tabId - Tab identifier
+ * @param {HTMLElement} gridContainer - Grid container element
+ */
+function setupViewerEvents(tabId, gridContainer) {
+    // AG-Grid handles most events internally
+    // Add any custom event handlers here if needed
+    console.log(`Events configured for ${tabId}`);
+}
+
+/**
+ * Load saved viewer state
+ * @param {string} tabId - Tab identifier
+ * @param {HTMLElement} gridContainer - Grid container element
+ */
+async function loadViewerState(tabId, gridContainer) {
+    // AG-Grid state management can be implemented here
+    // For now, we'll skip this as AG-Grid handles its own state well
+    console.log(`State loading for ${tabId} - not implemented yet`);
+}
+
+/**
+ * Update table with new data
+ * @param {string} tableId - Table to update
+ * @param {Array|Object} data - Data to add/update
+ * @param {boolean} replace - Replace all data (true) or append (false)
+ */
+async function updateTable(tableId, data, replace = false) {
+    try {
+        // Use GridManager's update method
+        if (BridgeState.gridManager) {
+            BridgeState.gridManager.updateGrid(tableId, data, replace);
+            
+            // Track update count
+            BridgeState.updateCount++;
+        }
+        
+    } catch (error) {
+        console.error(`Failed to update table ${tableId}:`, error);
+    }
+}
+
+/**
+ * Handle incoming data updates from IPC
+ * Implements batching for performance
+ * @param {object} update - Update message from main process
+ */
+function handleDataUpdate(update) {
+    const { type, table, data, options = {} } = update;
+    
+    // Update market data store if it's market data
+    if (type === 'marketData' && data) {
+        if (Array.isArray(data)) {
+            data.forEach(item => {
+                if (item.symbol) {
+                    BridgeState.marketData.set(item.symbol, item);
+                }
+            });
+        } else if (data.symbol) {
+            BridgeState.marketData.set(data.symbol, data);
+        }
+    }
+    
+    // Add to update queue for batching
+    if (!BridgeState.updateQueue.has(table)) {
+        BridgeState.updateQueue.set(table, []);
+    }
+    
+    BridgeState.updateQueue.get(table).push({
+        type,
+        data,
+        options,
+        timestamp: Date.now()
+    });
+    
+    // Process queue on next frame
+    scheduleUpdateProcessing();
+}
+
+/**
+ * Process batched updates
+ * Uses requestAnimationFrame for smooth updates
+ */
+let updateScheduled = false;
+function scheduleUpdateProcessing() {
+    if (updateScheduled) return;
+    
+    updateScheduled = true;
+    requestAnimationFrame(async () => {
+        updateScheduled = false;
+        await processUpdateQueue();
+    });
+}
+
+/**
+ * Process all queued updates
+ */
+async function processUpdateQueue() {
+    const startTime = performance.now();
+    
+    for (const [tableId, updates] of BridgeState.updateQueue) {
+        if (updates.length === 0) continue;
+        
+        // Combine updates for efficiency
+        const combinedData = [];
+        let shouldReplace = false;
+        
+        for (const update of updates) {
+            if (update.type === 'replace') {
+                shouldReplace = true;
+                combinedData.length = 0; // Clear previous updates
+                combinedData.push(...(Array.isArray(update.data) ? update.data : [update.data]));
+            } else {
+                combinedData.push(...(Array.isArray(update.data) ? update.data : [update.data]));
+            }
+        }
+        
+        // Apply updates through GridManager
+        await updateTable(tableId, combinedData, shouldReplace);
+        
+        // Clear processed updates
+        updates.length = 0;
+    }
+    
+    // Track latency
+    const latency = performance.now() - startTime;
+    if (BridgeState.config) {
+        BridgeState.config.AppState.metrics.latency = Math.round(latency);
+    }
+}
+
+/**
+ * Create all viewers for tabs
+ */
+async function createAllViewers() {
+    const { AppState, Elements, callbacks } = BridgeState.config;
+    
+    // Create a viewer for each tab
+    for (const tab of AppState.tabs) {
+        try {
+            // Create container div
+            const container = document.createElement('div');
+            container.id = `viewer-container-${tab.id}`;
+            container.style.width = '100%';
+            container.style.height = '100%';
+            container.style.display = tab.id === AppState.activeTab ? 'block' : 'none';
+            
+            // Add to tab content
+            Elements.tabContent.appendChild(container);
+            
+            // Create viewer (dashboard or single grid)
+            const viewer = await createViewer(tab.id, tab.id, container);
+            
+            // Notify callback
+            if (callbacks.onViewerCreated) {
+                callbacks.onViewerCreated(tab.id, viewer);
+            }
+            
+        } catch (error) {
+            console.error(`Failed to create viewer for ${tab.id}:`, error);
+        }
+    }
+}
+
+/**
+ * Cleanup dashboard resources
+ */
+function cleanupDashboard(tabId) {
+    const dashboard = BridgeState.dashboards.get(tabId);
+    if (!dashboard) return;
+    
+    // Clear update intervals
+    dashboard.updateIntervals.forEach(interval => clearInterval(interval));
+    
+    // Destroy grids
+    Object.values(dashboard.grids).forEach(gridApi => {
+        if (gridApi && !gridApi.isDestroyed()) {
+            gridApi.destroy();
+        }
+    });
+    
+    // Remove from state
+    BridgeState.dashboards.delete(tabId);
+}
+
+/**
+ * Public initialization function
+ * Called from index.js
+ */
+export async function initialize(config) {
+    console.log('Initializing AG-Grid bridge...');
+    
+    // Store configuration
+    BridgeState.config = config;
+    
+    try {
+        // Load AG-Grid
+        await loadPerspective();
+        
+        // Create table configurations
+        for (const [tableId, tableConfig] of Object.entries(TABLE_CONFIGS)) {
+            await createTable(tableId, tableConfig);
+        }
+        
+        // Create viewers
+        await createAllViewers();
+        
+        // Expose bridge API to window for debugging
+        window.PerspectiveBridge = {
+            handleDataUpdate,
+            updateTable,
+            getTables: () => BridgeState.tables,
+            getViewers: () => BridgeState.viewers,
+            getDashboards: () => BridgeState.dashboards,
+            getMetrics: () => ({
+                updateCount: BridgeState.updateCount,
+                tableCount: BridgeState.tables.size,
+                viewerCount: BridgeState.viewers.size,
+                dashboardCount: BridgeState.dashboards.size,
+                // Add GridManager metrics
+                ...BridgeState.gridManager?.getMetrics()
+            }),
+            // Add GridManager reference for debugging
+            gridManager: BridgeState.gridManager,
+            cleanupDashboard,
+            // Add grid ready check
+            isGridReady: (gridId) => {
+                const gridInfo = BridgeState.gridManager?.getGrid(gridId);
+                return gridInfo && gridInfo.api && !gridInfo.api.isDestroyed();
+            }
+        };
+        
+        console.log('AG-Grid bridge initialized successfully');
+        
+        // Process any pending market updates
+        if (window.pendingMarketUpdates && window.pendingMarketUpdates.length > 0) {
+            console.log(`Processing ${window.pendingMarketUpdates.length} queued market updates`);
+            window.pendingMarketUpdates.forEach(update => {
+                window.PerspectiveBridge.handleDataUpdate(update);
+            });
+            window.pendingMarketUpdates = [];
+        }
+        
+        // Notify ready callback
+        if (config.callbacks.onReady) {
+            config.callbacks.onReady();
+        }
+        
+    } catch (error) {
+        console.error('Failed to initialize AG-Grid bridge:', error);
+        if (config.callbacks.onError) {
+            config.callbacks.onError(error);
+        }
+        throw error;
+    }
+}
+
+/**
+ * Export individual functions for testing
+ */
+export {
+    createTable,
+    createViewer,
+    updateTable,
+    handleDataUpdate
+};

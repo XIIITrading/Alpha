@@ -1,0 +1,20 @@
+{
+  "name": "grid-manager",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Modular AG-Grid manager for trading applications",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test-shim.mjs",
+    "test:all": "npm run test:phase1-4 && npm run test:phase5 && npm run test:phase6 && npm run test:phase7 && npm run test:shim",
+    "test:phase1-4": "node test/test-phase1-4.js",
+    "test:phase5": "node test/test-phase5-updates.js",
+    "test:phase6": "node test/test-phase6-styles.js",
+    "test:phase7": "node test/test-phase7-utils.js",
+    "test:shim": "node test/test-shim.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "jsdom": "^22.1.0"
+  }
+}
