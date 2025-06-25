@@ -484,17 +484,6 @@ class PolygonBridge extends EventEmitter {
     handleWebSocketMessage(clientId, message) {
         const { type, data, timestamp } = message;
         
-        // DEBUG: Log all incoming WebSocket messages
-        console.log('📥 DEBUG: WebSocket message received:', {
-            clientId,
-            messageType: type,
-            hasData: !!data,
-            dataEventType: data?.event_type || (Array.isArray(data) ? data[0]?.event_type : undefined),
-            symbol: data?.symbol || (Array.isArray(data) ? data[0]?.symbol : undefined),
-            dataLength: Array.isArray(data) ? data.length : 'single',
-            timestamp: new Date().toISOString()
-        });
-        
         try {
             switch (type) {
                 case 'connected':
@@ -506,15 +495,6 @@ class PolygonBridge extends EventEmitter {
                     break;
                     
                 case 'market_data':
-                    // DEBUG: Log before transformation
-                    console.log('🔄 DEBUG: Routing to transformAndForwardMarketData:', {
-                        type,
-                        clientId,
-                        dataLength: Array.isArray(data) ? data.length : 'single',
-                        firstSymbol: Array.isArray(data) ? data[0]?.symbol : data?.symbol,
-                        hasTransformer: !!this.dataTransformer
-                    });
-                    
                     // Transform and forward market data
                     this.transformAndForwardMarketData(clientId, data);
                     break;
@@ -545,14 +525,6 @@ class PolygonBridge extends EventEmitter {
      * Transform and forward market data to renderer process
      */
     transformAndForwardMarketData(clientId, rawData) {
-        console.log('🔍 DEBUG: transformAndForwardMarketData called:', {
-            clientId,
-            hasDataTransformer: !!this.dataTransformer,
-            rawDataType: Array.isArray(rawData) ? 'array' : typeof rawData,
-            rawDataLength: Array.isArray(rawData) ? rawData.length : 1,
-            rawDataSample: Array.isArray(rawData) ? rawData[0] : rawData
-        });
-        
         if (!this.dataTransformer) {
             console.error('❌ DEBUG: No dataTransformer available!');
             return;
@@ -560,33 +532,13 @@ class PolygonBridge extends EventEmitter {
         
         try {
             // Transform the data using DataTransformationService
-            console.log('🔄 DEBUG: Starting transformation...');
             const transformedData = this.dataTransformer.transform(rawData);
-            
-            console.log('✅ DEBUG: Transformation complete:', {
-                inputCount: Array.isArray(rawData) ? rawData.length : 1,
-                outputCount: Array.isArray(transformedData) ? transformedData.length : (transformedData ? 1 : 0),
-                transformedSample: Array.isArray(transformedData) ? transformedData[0] : transformedData,
-                hasRequiredFields: transformedData ? {
-                    symbol: !!(Array.isArray(transformedData) ? transformedData[0]?.symbol : transformedData.symbol),
-                    price: !!(Array.isArray(transformedData) ? transformedData[0]?.price : transformedData.price),
-                    volume: !!(Array.isArray(transformedData) ? transformedData[0]?.volume : transformedData.volume),
-                    change: (Array.isArray(transformedData) ? transformedData[0]?.change : transformedData.change) !== undefined,
-                    changePercent: (Array.isArray(transformedData) ? transformedData[0]?.changePercent : transformedData.changePercent) !== undefined
-                } : 'no data'
-            });
             
             if (!transformedData) {
                 console.warn('⚠️ DEBUG: Transformation returned null/undefined');
                 logger.warn('Failed to transform market data:', rawData);
                 return;
             }
-            
-            // Log transformation for debugging
-            logger.debug('Data transformation:', {
-                original: rawData,
-                transformed: transformedData
-            });
             
             // Forward transformed data
             this.forwardMarketData(clientId, transformedData);
@@ -607,29 +559,9 @@ class PolygonBridge extends EventEmitter {
      * Forward market data to renderer process
      */
     forwardMarketData(clientId, data) {
-        // DEBUG: Log forwarding process
-        console.log('📤 DEBUG: forwardMarketData called:', {
-            clientId,
-            hasData: !!data,
-            dataType: Array.isArray(data) ? 'array' : typeof data,
-            dataLength: Array.isArray(data) ? data.length : 1,
-            sampleData: Array.isArray(data) ? data[0] : data
-        });
-        
         // Find all subscriptions for this client
         const clientSubscriptions = Array.from(this.subscriptions.entries())
             .filter(([_, sub]) => sub.clientId === clientId);
-        
-        console.log('🔍 DEBUG: Client subscriptions:', {
-            clientId,
-            subscriptionCount: clientSubscriptions.length,
-            subscriptions: clientSubscriptions.map(([id, sub]) => ({
-                id,
-                stream: sub.stream,
-                windowId: sub.windowId,
-                symbols: sub.symbols
-            }))
-        });
         
         if (clientSubscriptions.length === 0) {
             console.warn('⚠️ DEBUG: No active subscriptions for client:', clientId);
@@ -642,13 +574,6 @@ class PolygonBridge extends EventEmitter {
             
             // Check if data matches subscription
             if (this.dataMatchesSubscription(data, subscription)) {
-                console.log('📨 DEBUG: Data matches subscription, emitting market-data event:', {
-                    subscriptionId,
-                    windowId,
-                    stream,
-                    symbol: Array.isArray(data) ? data[0]?.symbol : data?.symbol
-                });
-                
                 // Emit data event for window
                 this.emit('market-data', {
                     windowId,
